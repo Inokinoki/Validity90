@@ -141,12 +141,12 @@ function validity90_proto.dissector(buffer, pinfo, tree)
             
             if buf:len() - 5 < len:uint() then
                 pinfo.cols["info"]:append(string.format(" INCOMPLETE %d left", len:uint() - buf:len() + 5))
-                t_validity90:add(f.f_particial, true)
+                t_validity90:add(f.f_particial, 2)
             elseif buf:len() - 5 == len:uint() then
                 pinfo.cols["info"]:append(string.format(" COMPLETED", len:uint() - buf:len() + 5))
                 partialBuffer = nil
 
-                t_validity90:add(f.f_particial, 0)
+                t_validity90:add(f.f_particial, 1)
 
                 -- iv
                 local iv = buf(offset, 16)
