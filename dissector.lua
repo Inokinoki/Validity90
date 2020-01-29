@@ -25,6 +25,7 @@ f.f_particial = ProtoField.bool("validity90.partial", "Is partial", base.NONE, {
 
 local f_direction = Field.new("usb.endpoint_address.direction")
 
+local CONST_MAGIC_HEADER_RSP_6 = ByteArray.new("0000001000000000")
 local CONST_MAGIC_HEADER_44 = ByteArray.new("44000000")
 local CONST_MAGIC_HEADER = ByteArray.new("170303")
 local CONST_MAGIC_HEADER_TLS_DATA = ByteArray.new("17")
@@ -34,7 +35,17 @@ local CONST_MAGIC_HEADER_TLS14 = ByteArray.new("14")
 
 local packetDb = {}
 local partialBuffer = nil
-local sslDissector = Dissector.get('ssl')
+
+local major, minor, micro = "0", "0", "0"
+if get_version then
+    major, minor, micro = get_version():match("(%d+)%.(%d+)%.(%d+)")
+end
+
+if tonumber(major) < 3 then
+    local sslDissector = Dissector.get('ssl')
+else
+    local sslDissector = Dissector.get('tls')
+end
 
 local function decode_aes(ivStr, dataStr)
     -- body
@@ -68,6 +79,18 @@ end
 
 function parseSsl(buffer, pinfo, tree)
     sslDissector:call(buffer, pinfo, tree)
+end
+
+function resp_6_type_to_string(type)
+    if type == 3 then
+        return "RSP6_TLS_CERT"
+    elseif type == 4 then
+        return "RSP6_ECDSA_PRIV_ENCRYPTED"
+    elseif type == 6 then
+        return "RSP6_ECDH_PUB"
+    else
+        return "Unknown"
+    end
 end
 
 function validity90_proto.dissector(buffer, pinfo, tree)
@@ -122,6 +145,33 @@ function validity90_proto.dissector(buffer, pinfo, tree)
         magic_header1 = buf(offset, 1)
     end
 
+    if buf:len() > 8 and buf(offset, 8):bytes() == CONST_MAGIC_HEADER_RSP_6 then
+        pinfo.cols["info"]:append(" Validity 94 - Response 6")
+
+        local resp6_type
+        local resp6_len
+        local resp6_hash
+        local resp6_offset = 8
+
+        resp6_type = buf(resp6_offset, 2):le_uint()
+        resp6_len = buf(resp6_offset + 2, 2):le_uint()
+        resp6_hash = buf(resp6_offset + 4, 32)
+        while( resp6_type ~= 65535 )
+        do
+
+            local t_resp6_packet_tree = t_validity90:add(buf(resp6_offset, 4 + 32 + resp6_len), "Response 6 Packet", resp_6_type_to_string(resp6_type))
+            t_resp6_packet_tree:add(buf(resp6_offset, 2), "Type", resp6_type)
+            t_resp6_packet_tree:add(buf(resp6_offset + 2, 2), "Length", resp6_len)
+            t_resp6_packet_tree:add(buf(resp6_offset + 4, 32), "Hash", tostring(resp6_hash))
+            t_resp6_packet_tree:add(buf(resp6_offset + 4 + 32, resp6_len), "Content", tostring(buf(resp6_offset + 4 + 32, resp6_len)))
+
+            resp6_offset = resp6_offset + 4 + 32 + resp6_len
+            resp6_type = buf(resp6_offset, 2):le_uint()
+            resp6_len = buf(resp6_offset + 2, 2):le_uint()
+            resp6_hash = buf(resp6_offset + 4, 32)
+        end
+    end
+
     if magic_header1 and magic_header1:bytes() == CONST_MAGIC_HEADER_TLS 
         or magic_header1:bytes() == CONST_MAGIC_HEADER_TLS_DATA 
         or magic_header1:bytes() == CONST_MAGIC_HEADER_TLS14
@@ -141,12 +191,12 @@ function validity90_proto.dissector(buffer, pinfo, tree)
             
             if buf:len() - 5 < len:uint() then
                 pinfo.cols["info"]:append(string.format(" INCOMPLETE %d left", len:uint() - buf:len() + 5))
-                t_validity90:add(f.f_particial, true)
+                t_validity90:add(f.f_particial, false)
             elseif buf:len() - 5 == len:uint() then
                 pinfo.cols["info"]:append(string.format(" COMPLETED", len:uint() - buf:len() + 5))
                 partialBuffer = nil
 
-                t_validity90:add(f.f_particial, 0)
+                t_validity90:add(f.f_particial, true)
 
                 -- iv
                 local iv = buf(offset, 16)
